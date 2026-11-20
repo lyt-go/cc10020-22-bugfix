@@ -104,11 +104,31 @@ def pipeline_backfill_execute(request: BackfillExecuteRequest) -> dict[str, Any]
     """链路4: 历史回补 → 水位查询 → 批量拉取 → 数据落湖。
 
     完整覆盖：backfill_job → incre_cursor → batch_ingest → data_lake_sink。
+    每次按日写入都会生成分区写入确认明细，回补台账只引用回执。
     """
     from app.services.backfill_job import BackfillJobService
     svc = BackfillJobService()
     result = svc.execute_backfill(job_id=request.job_id)
     return result
+
+
+@router.post("/backfill-resume")
+def pipeline_backfill_resume(request: BackfillExecuteRequest) -> dict[str, Any]:
+    """链路4续: 按原回补请求续做未确认批次，并沿回执实际查询各自数据。
+
+    已确认批次只查询核对、保持原有结果；未确认但文件已写成的批次补确认。
+    """
+    from app.services.backfill_job import BackfillJobService
+    svc = BackfillJobService()
+    result = svc.resume_backfill(job_id=request.job_id)
+    return result
+
+
+@router.get("/backfill-ledger")
+def pipeline_backfill_ledger(job_id: int) -> dict[str, Any]:
+    """链路4台账: 读取回补台账，并以分区写入确认明细为准实时对齐。"""
+    from app.services.backfill_job import BackfillJobService
+    return BackfillJobService().get_backfill_ledger(job_id=job_id)
 
 
 @router.post("/endpoint-test")

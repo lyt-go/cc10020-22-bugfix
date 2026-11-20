@@ -82,31 +82,32 @@ class BatchIngestService(BaseModuleService):
             transformed = self._transform_batch(endpoint_id, mock_data)
 
             # 数据落湖（跨模块：data_lake_sink）
-            for record in transformed:
-                try:
-                    from app.services.data_lake_sink import DataLakeSinkService
-                    sink_svc = DataLakeSinkService()
-                    result = sink_svc.write_event(
-                        f"{batch_id}:{uuid.uuid4().hex[:8]}",
-                        "batch_ingest",
-                        record,
-                        source_channel_id=endpoint_id,
-                    )
-                    if result.get("ok"):
-                        total_sunk += 1
-                    else:
-                        errors.append(f"落湖失败: {result.get('message')}")
-                        if on_failure == "中断任务":
-                            return {
-                                "ok": False,
-                                "message": f"第{page}页落湖失败，任务中断",
-                                "pages_processed": pages_processed,
-                                "records_fetched": total_fetched,
-                                "records_sunk": total_sunk,
-                                "errors": errors,
-                            }
-                except Exception as e:
-                    errors.append(str(e))
+            # 每页作为一个批次写入，生成分区写入确认明细；批次键含任务/批次/页码，
+            # 断点续传重跑同一页只会命中已有回执，不会重复落湖。
+            try:
+                from app.services.data_lake_sink import DataLakeSinkService
+                sink_svc = DataLakeSinkService()
+                result = sink_svc.write_batch(
+                    transformed,
+                    event_type="batch_ingest",
+                    source_channel_id=endpoint_id,
+                    batch_key=f"batch_ingest:{batch_id}:page:{page}",
+                )
+                if result.get("ok"):
+                    total_sunk += int(result.get("written") or len(transformed))
+                else:
+                    errors.append(f"落湖失败: {result.get('message')}")
+                    if on_failure == "中断任务":
+                        return {
+                            "ok": False,
+                            "message": f"第{page}页落湖失败，任务中断",
+                            "pages_processed": pages_processed,
+                            "records_fetched": total_fetched,
+                            "records_sunk": total_sunk,
+                            "errors": errors,
+                        }
+            except Exception as e:
+                errors.append(str(e))
 
             # 保存断点
             if enable_checkpoint:

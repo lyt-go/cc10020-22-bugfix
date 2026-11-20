@@ -13,13 +13,18 @@ from __future__ import annotations
 
 import json
 import os
+import pkgutil
 import sys
+import tempfile
 import unittest
 
 # 将backend目录加入路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.persistence import json_store
+import app.services as services_pkg
+from app.persistence import JsonStore, json_store
+import app.services.data_lake_sink as sink_mod
+import app.services.event_archive as archive_mod
 from app.services.api_endpoint import ApiEndpointService
 from app.services.webhook_channel import WebhookChannelService
 from app.services.event_schema import EventSchemaService
@@ -38,6 +43,54 @@ from app.services.incre_cursor import IncreCursorService
 from app.services.backfill_job import BackfillJobService
 from app.services.event_archive import EventArchiveService
 from app.services.integration_monitor import IntegrationMonitorService
+
+
+_TMP_HOME: tempfile.TemporaryDirectory | None = None
+_ORIGINALS: dict[str, object] = {}
+
+
+def _bind_store(store):
+    """服务模块在 import 时绑定了 json_store，换存储后需要逐个指回去。"""
+    import importlib
+
+    for info in pkgutil.iter_modules(services_pkg.__path__):
+        if info.name.startswith("_"):
+            continue
+        module = importlib.import_module(f"app.services.{info.name}")
+        if hasattr(module, "json_store"):
+            module.json_store = store
+
+
+def setUpModule():
+    """整个测试模块共用一个临时存储和数据湖目录，避免写入仓库 data_store。"""
+    global _TMP_HOME, json_store
+    import app.persistence
+
+    _TMP_HOME = tempfile.TemporaryDirectory()
+    _ORIGINALS["store"] = app.persistence.json_store
+    _ORIGINALS["sink_store"] = sink_mod.json_store
+    _ORIGINALS["lake"] = sink_mod.DataLakeSinkService.LAKE_BASE
+    _ORIGINALS["archive"] = archive_mod.EventArchiveService.ARCHIVE_BASE
+
+    store = JsonStore(base_dir=os.path.join(_TMP_HOME.name, "store"))
+    app.persistence.json_store = store
+    _bind_store(store)
+    json_store = store
+    sink_mod.DataLakeSinkService.LAKE_BASE = os.path.join(_TMP_HOME.name, "lake")
+    archive_mod.EventArchiveService.ARCHIVE_BASE = os.path.join(_TMP_HOME.name, "archive")
+
+
+def tearDownModule():
+    global json_store
+    import app.persistence
+
+    app.persistence.json_store = _ORIGINALS["store"]
+    _bind_store(_ORIGINALS["store"])
+    json_store = _ORIGINALS["store"]
+    sink_mod.DataLakeSinkService.LAKE_BASE = _ORIGINALS["lake"]
+    archive_mod.EventArchiveService.ARCHIVE_BASE = _ORIGINALS["archive"]
+    if _TMP_HOME is not None:
+        _TMP_HOME.cleanup()
 
 
 class TestDataPersistence(unittest.TestCase):

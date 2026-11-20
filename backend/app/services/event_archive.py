@@ -26,9 +26,15 @@ class EventArchiveService(BaseModuleService):
     ACTION_RULES = {"提交校验": "待校验", "标记生效": "已生效", "停用策略": "已停用"}
     NEGATIVE_ACTIONS = ["停用策略"]
 
+    # 允许测试或部署时覆盖归档根目录。
+    ARCHIVE_BASE: str | None = None
+
     def __init__(self) -> None:
         super().__init__()
-        self._archive_base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data_store", "archive")
+        base = self.ARCHIVE_BASE
+        if base is None:
+            base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data_store", "archive")
+        self._archive_base = base
         os.makedirs(self._archive_base, exist_ok=True)
         self._archive_history: list[dict[str, Any]] = []
 

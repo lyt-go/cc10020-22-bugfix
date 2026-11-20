@@ -69,17 +69,40 @@ def _seed_and_cleanup():
         import app.services.event_archive as ea_mod
         import app.services.integration_monitor as im_mod
 
-        # Re-import all services to pick up new store
+        # 本文件用模块级 json_store 断言，因此 reload 后要同步本模块的引用，
+        # 并把数据湖目录也隔离到临时目录，避免写到仓库 data_store。
+        data_lake_module = sink_mod
+        lake_base = os.path.join(tmp, "lake")
+        data_lake_module.DataLakeSinkService.LAKE_BASE = lake_base
+        archive_base = os.path.join(tmp, "archive")
+        ea_mod.EventArchiveService.ARCHIVE_BASE = archive_base
+
         import importlib
         for mod in [api_mod, wh_mod, es_mod, mq_mod, dlq_mod, sink_mod, dt_mod,
                      dq_mod, dr_mod, df_mod, bi_mod, ic_mod, bj_mod, ctl_mod,
                      rlc_mod, aas_mod, ea_mod, im_mod]:
             importlib.reload(mod)
 
+        # reload 会重置类属性，隔离设置需要放在 reload 之后。
+        sink_mod.DataLakeSinkService.LAKE_BASE = lake_base
+        ea_mod.EventArchiveService.ARCHIVE_BASE = archive_base
+        globals()["json_store"] = store
+        globals()["global_store"].json_store = store
+
         yield
 
         import app.persistence
         app.persistence.json_store = global_store
+        globals()["json_store"] = global_store
+        # reload 时各服务模块从 app.persistence 取了临时 store；这里必须指回全局 store，
+        # 否则后续测试文件读到的是已删除的临时目录。
+        for mod in [api_mod, wh_mod, es_mod, mq_mod, dlq_mod, sink_mod, dt_mod,
+                    dq_mod, dr_mod, df_mod, bi_mod, ic_mod, bj_mod, ctl_mod,
+                    rlc_mod, aas_mod, ea_mod, im_mod]:
+            if hasattr(mod, "json_store"):
+                mod.json_store = global_store
+        sink_mod.DataLakeSinkService.LAKE_BASE = None
+        ea_mod.EventArchiveService.ARCHIVE_BASE = None
 
 
 # ──────────────────────────────────────────────────────────

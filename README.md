@@ -69,6 +69,32 @@ npm run dev
 | 事件归档清理 | `event_archive` | 归档策略 | 策略编号、事件类型、归档条件 |
 | 集成监控看板 | `integration_monitor` | 监控指标 | 指标编号、监控对象、成功率 |
 
+## 分区写入确认明细
+
+数据湖的每次批量写入都会生成一条持久化的写入确认记录（receipt），
+落湖写入和历史回补共用同一份记录：
+
+- 同一天/同一秒的多个批次用批次键（`batch_key`）摘要命名文件，
+  各自落成独立文件，不再互相覆盖；
+- 同一批次重复提交命中已有回执，只保留首次有效写入（文件、回执、台账各一条）；
+- 写入文件成功但未收到确认时保留 `待确认` 回执，可沿回执续做并查回实际数据；
+- 没有持久化回执的历史分区文件，会按文件生成兼容凭证，仍可查询和确认。
+
+回补任务的回补台账只保存回执号/批次键等引用，`回补结论` 和 `完成水位` 由回执实时对账。
+
+相关接口：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/lake-receipts` | 列写入确认明细（含历史凭证） |
+| GET | `/api/lake-receipts/partitions` | 按分区汇总确认情况 |
+| GET | `/api/lake-receipts/{receipt_id}` | 读取单条回执 |
+| GET | `/api/lake-receipts/{receipt_id}/data` | 按回执实际查询写入数据 |
+| POST | `/api/lake-receipts/{receipt_id}/confirm` | 补确认 |
+| POST | `/api/lake-receipts/{receipt_id}/resume` | 按原回执续做 |
+| GET | `/api/pipeline/backfill-ledger?job_id=` | 回补台账（以回执为准对账） |
+| POST | `/api/pipeline/backfill-resume` | 按原回补请求续做未确认批次 |
+
 ## 约定
 
 - 全部模块共享`frontend/src/views/WorkbenchView.vue|tsx`和一套资源路由。

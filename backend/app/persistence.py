@@ -86,6 +86,30 @@ class JsonStore:
             self._write_raw(key, data)
             return dict(record)
 
+    def upsert(self, key: str, record: dict[str, Any]) -> dict[str, Any]:
+        """按记录自带 id 写入：存在则合并更新，不存在则原样插入（保留 id）。"""
+        record_id = int(record.get("id", 0))
+        with self._lock:
+            data = self._read_raw(key)
+            records = data.get("records", [])
+            now = datetime.now(timezone.utc).isoformat()
+            for i, existing in enumerate(records):
+                if int(existing.get("id", 0)) == record_id:
+                    records[i].update(record)
+                    records[i]["updated_at"] = now
+                    data["_meta"]["version"] = data["_meta"].get("version", 0) + 1
+                    data["_meta"]["updated_at"] = now
+                    self._write_raw(key, data)
+                    return dict(records[i])
+            stored = dict(record)
+            stored.setdefault("created_at", now)
+            stored["updated_at"] = now
+            records.append(stored)
+            data["_meta"]["version"] = data["_meta"].get("version", 0) + 1
+            data["_meta"]["updated_at"] = now
+            self._write_raw(key, data)
+            return dict(stored)
+
     def update(self, key: str, record_id: int, updates: dict[str, Any]) -> dict[str, Any] | None:
         """更新一条记录。"""
         with self._lock:
@@ -197,3 +221,38 @@ class JsonStore:
 
 # 全局单例
 json_store = JsonStore()
+
+
+def ensure_persisted(key: str, entry_id: int) -> dict[str, Any] | None:
+    """确保一条内存示例数据在 JSON 存储中存在，并返回存储中的最新记录。
+
+    资源路由的登记/动作写在内存仓库，领域服务读的是 JSON 存储。
+    两边共用同一 id 时，以内存数据为准补写一次，后续状态流转都落在 JSON 存储里，
+    避免“接口里能看到任务、执行时却提示不存在”。
+    """
+    from app.store import store
+
+    persisted = json_store.get_by_id(key, entry_id)
+    entry = store.find(key, entry_id)
+
+    if entry is None:
+        return persisted
+
+    # 内存示例数据只是展示用：不落库，也不能覆盖 JSON 存储里同名 id 的真实任务。
+    if entry.get("_seed"):
+        return persisted
+
+    if persisted is None:
+        json_store.upsert(key, {k: v for k, v in entry.items() if k != "_seed"})
+        persisted = json_store.get_by_id(key, entry_id)
+        if persisted is None:
+            return None
+
+    # 内存里的状态更新需要同步到存储，但回补台账等存储侧字段不能被覆盖丢失。
+    if persisted.get("status") != entry.get("status"):
+        merged = {k: v for k, v in entry.items()
+                  if k not in ("id", "created_at", "updated_at", "_seed")}
+        merged.update({k: persisted[k] for k in (persisted.keys() - entry.keys())})
+        persisted = json_store.update(key, entry_id, merged) or persisted
+
+    return persisted
